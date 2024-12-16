@@ -1,5 +1,6 @@
 import tkinter as tk
 import tkinter.messagebox
+import tkinter.filedialog
 from tkinter import ttk
 import cv2
 from AVFoundation import AVCaptureDevice
@@ -9,10 +10,14 @@ import os
 import threading
 import copy
 
+
 class WebcamSelectorApp:
     def __init__(self, root):
         self.root = root
         self.root.title("Instant Replay with Adjustable Delay")
+
+        # Initialize default save directory
+        self.save_directory = os.getcwd()
 
         # Get list of webcams
         self.webcams = self.get_webcam_names()
@@ -47,7 +52,7 @@ class WebcamSelectorApp:
 
         self.delay_var = tk.StringVar()
         self.delay_var.set("0.0")
-        self.delay_var.trace("w", self.update_slider_from_entry)  # Bind text change to update the slider
+        self.delay_var.trace("w", self.update_slider_from_entry)
 
         self.delay_entry = tk.Entry(root, width=10, textvariable=self.delay_var)
         self.delay_entry.pack(pady=5)
@@ -63,6 +68,10 @@ class WebcamSelectorApp:
         # Button to save footage
         self.save_button = tk.Button(root, text="Save Last 30 Seconds", command=self.save, state="disabled")
         self.save_button.pack(pady=10)
+
+        # Button to change save directory
+        self.change_directory_button = tk.Button(root, text="Change Save Directory", command=self.change_save_directory)
+        self.change_directory_button.pack(pady=10)
 
         self.running = False
         self.capture = None
@@ -119,6 +128,7 @@ class WebcamSelectorApp:
         self.control_button.config(text="Stop Webcam")
         self.mirror_button.config(state="normal")  # Enable the mirror button
         self.save_button.config(state="normal")  # Enable the save button
+        self.max_save_buffer_size = int((self.capture.get(cv2.CAP_PROP_FPS) or 30) * 30)  # Maximum number of frames for a 30-second save buffer
         self.show_frame()
 
     def stop_webcam(self):
@@ -133,16 +143,20 @@ class WebcamSelectorApp:
 
         cv2.destroyAllWindows()  # Close OpenCV window
         self.delay_buffer.clear()  # Clear the delay buffer
-        self.save_buffer.clear() #Clear the saved buffer
+        self.save_buffer.clear()  # Clear the saved buffer
 
     def toggle_mirror(self):
         """Toggles the mirroring effect on the video feed."""
         self.mirror = not self.mirror
 
+    def change_save_directory(self):
+        """Allow the user to select a directory to save videos."""
+        directory = tkinter.filedialog.askdirectory(initialdir=self.save_directory, title="Select Save Directory")
+        if directory:  # If a directory is selected
+            self.save_directory = directory
+            tkinter.messagebox.showinfo("Info", f"Save directory changed to: {self.save_directory}")
+
     def save(self):
-        if self.save_button['state'] == 'disabled':
-            return
-        
         """Save the last 30 seconds of webcam frames to an MP4 file in a separate thread."""
         if not self.save_buffer:
             tkinter.messagebox.showinfo("Info", "No frames available to save.")
@@ -164,11 +178,11 @@ class WebcamSelectorApp:
 
     def _save_video(self, save_buffer, fps, width, height):
         """Worker method to save video in a separate thread."""
-        # Generate a unique filename
-        filename = "video.mp4"
+        # Generate a unique filename in the selected directory
+        filename = os.path.join(self.save_directory, "video.mp4")
         counter = 1
         while os.path.exists(filename):
-            filename = f"video_{counter}.mp4"
+            filename = os.path.join(self.save_directory, f"video_{counter}.mp4")
             counter += 1
 
         # Create a VideoWriter object
@@ -181,48 +195,43 @@ class WebcamSelectorApp:
 
         out.release()  # Release the writer
 
-        # Get the absolute path of the saved file
-        absolute_path = os.path.abspath(filename)
-        print(f"Video saved to: {absolute_path}")
-        self.root.after(0, lambda: self.save_button.config(state="normal"))  # Enable the save button)
-        # Show a message box to inform the user (this needs to be called in the main thread)
-        #self.root.after(0, lambda: tkinter.messagebox.showinfo("Info", f"Video saved as {filename}"))
-        
+        # Inform the user
+        self.root.after(0, lambda: self.save_button.config(state="normal"))  # Enable the save button
+        self.root.after(0, lambda: tkinter.messagebox.showinfo("Info", f"Video saved as {filename}"))
+
     def show_frame(self):
-            """Capture and display frames in an external OpenCV window."""
-            self.max_save_buffer_size = int((self.capture.get(cv2.CAP_PROP_FPS) or 30) * 30)  # Maximum number of frames for a 30-second save buffer
-            if self.running:
-                ret, frame = self.capture.read()
-                if ret:
-                    # Apply mirroring if enabled
-                    if self.mirror:
-                        frame = cv2.flip(frame, 1)  # Flip horizontally
+        """Capture and display frames in an external OpenCV window."""
+        if self.running:
+            ret, frame = self.capture.read()
+            if ret:
+                # Apply mirroring if enabled
+                if self.mirror:
+                    frame = cv2.flip(frame, 1)  # Flip horizontally
 
-                    # Store frame in delay buffer
-                    self.delay_buffer.append((time.time(), frame))
+                # Store frame in delay buffer
+                self.delay_buffer.append((time.time(), frame))
 
-                    # Remove frames outside the delay window
-                    while self.delay_buffer and time.time() - self.delay_buffer[0][0] > self.delay:
-                        val = self.delay_buffer.popleft()
-                        self.save_buffer.append(val)
+                # Remove frames outside the delay window
+                while self.delay_buffer and time.time() - self.delay_buffer[0][0] > self.delay:
+                    val = self.delay_buffer.popleft()
+                    self.save_buffer.append(val)
 
-                        # Display the delayed frame in an external OpenCV window
-                        cv2.imshow("Webcam Feed", val[1])
+                    # Display the delayed frame in an external OpenCV window
+                    cv2.imshow("Webcam Feed", val[1])
 
-                    # Limit the save buffer size to 30 seconds
-                    if len(self.save_buffer) > self.max_save_buffer_size:
-                        self.save_buffer.popleft()
+                # Limit the save buffer size to 30 seconds
+                if len(self.save_buffer) > self.max_save_buffer_size:
+                    self.save_buffer.popleft()
 
-                if cv2.waitKey(1) & 0xFF == ord('s'):
-                    self.save()
-                
-                # Close the window when 'q' is pressed
-                if cv2.waitKey(1) & 0xFF == ord('q'):
-                    self.stop_webcam()
-                    return
+            if cv2.waitKey(1) & 0xFF == ord('s'):
+                self.save()
+            
+            if cv2.waitKey(1) & 0xFF == ord('q'):
+                self.stop_webcam()
+                return
 
-                # Call this method again after 10ms
-                self.root.after(1, self.show_frame)
+            self.root.after(1, self.show_frame)
+
 
 # Create the Tkinter application
 root = tk.Tk()
