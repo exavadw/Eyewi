@@ -257,9 +257,16 @@ class WebcamSelectorApp:
             f.write(directory)
 
     def get_webcam_names(self):
-        """Retrieve names of connected webcams using AVFoundation."""
-        devices = AVCaptureDevice.devicesWithMediaType_("vide")
-        return [device.localizedName() for device in devices]
+        index = 0
+        webcam_names = []
+        while True:
+            cap = cv2.VideoCapture(index)
+            if not cap.read()[0]:
+                break
+            webcam_names.append(f"Webcam {index}")
+            cap.release()
+            index += 1
+        return webcam_names
 
     def update_save_slider_label(self, value):
         """Update the slider value label."""
