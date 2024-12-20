@@ -9,114 +9,46 @@ from collections import deque
 import os
 import threading
 import copy
-
+import time
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaFileUpload
+from google_auth_oauthlib.flow import InstalledAppFlow
+from google.auth.transport.requests import Request
+import os
+import pickle
+import re
+import drive
+import shutil
 
 class WebcamSelectorApp:
     SAVE_DIRECTORY_FILE = "save_directory.txt"
+    SAVE_LINK_FILE = "save_link.txt"
     def __init__(self, root):
         self.root = root
-        self.root.title("Instant Replay with Adjustable Delay")
+        self.root.title("Eyewi")
 
-        # Initialize default save directory
-        self.save_directory = os.getcwd()
+        # Create a Frame to hold the canvas and scrollbar
+        main_frame = ttk.Frame(self.root)
+        main_frame.pack(fill=tk.BOTH, expand=True)
 
-        # Get list of webcams
-        self.webcams = self.get_webcam_names()
+        # Create a Canvas
+        canvas = tk.Canvas(main_frame)
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-        # Dropdown to select webcam
-        self.webcamlabel = tk.Label(root, text="Select Webcam:")
-        self.webcamlabel.pack(pady=5)
+        # Add a vertical scrollbar to the canvas
+        scrollbar = ttk.Scrollbar(main_frame, orient=tk.VERTICAL, command=canvas.yview)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
-        self.webcam_dropdown = ttk.Combobox(root, state="readonly", values=self.webcams)
-        self.webcam_dropdown.bind("<<ComboboxSelected>>", self.on_webcam_change)
-        self.webcam_dropdown.pack(pady=5)
+        # Configure the canvas to use the scrollbar
+        canvas.configure(yscrollcommand=scrollbar.set)
+        canvas.bind('<Configure>', lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
 
-        if self.webcams:
-            self.webcam_dropdown.current(0)  # Set default to first webcam
-        else:
-            self.webcam_dropdown.set("No webcams found")
+        # Create a frame inside the canvas for widgets
+        self.content_frame = ttk.Frame(canvas)
+        canvas.create_window((0, 0), window=self.content_frame, anchor="nw")
 
-        self.reslabel = tk.Label(root, text="Select Resolution and FPS:")
-        self.reslabel.pack(pady=5)
-
-        self.resolutions = self.get_supported_resolutions_fps(self.webcam_dropdown.current())
-
-        self.resolution_dropdown = ttk.Combobox(root, state="readonly", values=self.resolutions)
-        self.resolution_dropdown.pack(pady=5)
-
-        if self.resolution_dropdown:
-            self.resolution_dropdown.current(len(self.resolutions) - 1)  # Set default to first webcam
-        else:
-            self.resolution_dropdown.set("N/A")
-
-        # Slider to adjust delay
-        self.slider_label = tk.Label(root, text="Adjust Delay (0-30 seconds):")
-        self.slider_label.pack(pady=5)
-
-        self.delay_slider = tk.Scale(root, from_=0, to=30, resolution=0.001, orient="horizontal", length=300, command=self.update_slider_label)
-        self.delay_slider.set(0.0)
-        self.delay_slider.pack(pady=5)
-
-        # Label to display slider value
-        self.slider_value_label = tk.Label(root, text="Delay: 0.000 seconds")
-        self.slider_value_label.pack(pady=5)
-
-        # Entry to specify precise delay
-        self.entry_label = tk.Label(root, text="Specify Delay (0-30 seconds):")
-        self.entry_label.pack(pady=5)
-
-        self.delay_var = tk.StringVar()
-        self.delay_var.set("0.0")
-        self.delay_var.trace("w", self.update_slider_from_entry)
-
-        self.delay_entry = tk.Entry(root, width=10, textvariable=self.delay_var)
-        self.delay_entry.pack(pady=5)
-
-        # Button to toggle mirroring
-        self.mirror_button = tk.Button(root, text="Toggle Mirror", command=self.toggle_mirror)
-        self.mirror_button.pack(pady=10)
-
-        # Button to start/stop webcam
-        self.control_button = tk.Button(root, text="Start Webcam", command=self.toggle_webcam)
-        self.control_button.pack(pady=10)
-
-        # Slider to adjust save buffer values
-        self.save_slider_label = tk.Label(root, text="Adjust Video Length (Max 120 Seconds):")
-        self.save_slider_label.pack(pady=5)
-
-        self.save_slider = tk.Scale(root, from_=1, to=120, resolution=1, orient="horizontal", length=300, command=self.update_save_slider_label)
-        self.save_slider.set(1)
-        self.save_slider.pack(pady=5)
-
-        # Label to display slider value
-        self.save_slider_value_label = tk.Label(root, text="Video Length: 1 second")
-        self.save_slider_value_label.pack(pady=5)
-
-        # Entry to specify precise delay
-        self.save_entry_label = tk.Label(root, text="Specify Video Length (0-120 seconds):")
-        self.save_entry_label.pack(pady=5)
-
-        self.save_var = tk.StringVar()
-        self.save_var.set("1")
-        self.save_var.trace("w", self.update_save_from_entry)
-
-        self.save_entry = tk.Entry(root, width=10, textvariable=self.save_var)
-        self.save_entry.pack(pady=5)
-
-        # Button to save footage
-        self.save_button = tk.Button(root, text="Save Video", command=self.save, state="disabled")
-        self.save_button.pack(pady=10)
-
-        self.savelabel = tk.Label(root, text=f"Current Save Directory:")
-        self.savelabel.pack(pady=5)
-
-        self.dirlabel = tk.Label(root, text=self.load_save_directory())
-        self.dirlabel.pack(pady=5)
-        
-        # Button to change save directory
-        self.change_directory_button = tk.Button(root, text="Change Save Directory", command=self.change_save_directory)
-        self.change_directory_button.pack(pady=10)
-
+        # Initialize Variables
+        self.drive = drive.GoogleDriveUploader()
         self.currentwidth = 0
         self.currentheight = 0
         self.currentfps = 0
@@ -128,6 +60,165 @@ class WebcamSelectorApp:
         self.save_buffer = deque()  # To store frames for delayed playback
         self.delay = 0.0
         self.mirror = False  # Flag to toggle mirroring
+        self.upload_to_drive = False
+
+        # Populate the content frame with widgets
+        self.populate_widgets()
+
+
+
+    def populate_widgets(self):
+        # Initialize default save directory
+        self.save_directory = os.getcwd()
+
+        # Get list of webcams
+        self.webcams = self.get_webcam_names()
+
+        # Dropdown to select webcam
+        self.webcamlabel = tk.Label(self.content_frame, text="Select Webcam:")
+        self.webcamlabel.pack(pady=5)
+
+        self.webcam_dropdown = ttk.Combobox(self.content_frame, state="readonly", values=self.webcams)
+        self.webcam_dropdown.bind("<<ComboboxSelected>>", self.on_webcam_change)
+        self.webcam_dropdown.pack(pady=5)
+
+        if self.webcams:
+            self.webcam_dropdown.current(0)  # Set default to first webcam
+        else:
+            self.webcam_dropdown.set("No webcams found")
+
+        self.reslabel = tk.Label(self.content_frame, text="Select Resolution and FPS:")
+        self.reslabel.pack(pady=5)
+
+        self.resolutions = self.get_supported_resolutions_fps(0)  # Placeholder index
+        self.resolution_dropdown = ttk.Combobox(self.content_frame, state="readonly", values=self.resolutions)
+        self.resolution_dropdown.pack(pady=5)
+
+        if self.resolutions:
+            self.resolution_dropdown.current(len(self.resolutions) - 1)
+        else:
+            self.resolution_dropdown.set("N/A")
+
+        # Slider to adjust delay
+        self.slider_label = tk.Label(self.content_frame, text="Adjust Delay (0-30 seconds):")
+        self.slider_label.pack(pady=5)
+
+        self.delay_slider = tk.Scale(self.content_frame, from_=0, to=30, resolution=0.001, orient="horizontal", length=300, command=self.update_slider_label)
+        self.delay_slider.set(0.0)
+        self.delay_slider.pack(pady=5)
+
+        # Label to display slider value
+        self.slider_value_label = tk.Label(self.content_frame, text="Delay: 0.000 seconds")
+        self.slider_value_label.pack(pady=5)
+
+        # Entry to specify precise delay
+        self.entry_label = tk.Label(self.content_frame, text="Specify Delay (0-30 seconds):")
+        self.entry_label.pack(pady=5)
+
+        self.delay_var = tk.StringVar()
+        self.delay_var.set("0.0")
+        self.delay_var.trace("w", self.update_slider_from_entry)
+
+        self.delay_entry = tk.Entry(self.content_frame, width=10, textvariable=self.delay_var)
+        self.delay_entry.pack(pady=5)
+
+        # Button to toggle mirroring
+        self.mirror_button = tk.Button(self.content_frame, text="Toggle Mirror", command=self.toggle_mirror)
+        self.mirror_button.pack(pady=10)
+
+        # Button to start/stop webcam
+        self.control_button = tk.Button(self.content_frame, text="Start Webcam", command=self.toggle_webcam)
+        self.control_button.pack(pady=10)
+
+        # Slider to adjust save buffer values
+        self.save_slider_label = tk.Label(self.content_frame, text="Adjust Video Length (Max 120 Seconds):")
+        self.save_slider_label.pack(pady=5)
+
+        self.save_slider = tk.Scale(self.content_frame, from_=1, to=120, resolution=1, orient="horizontal", length=300, command=self.update_save_slider_label)
+        self.save_slider.set(1)
+        self.save_slider.pack(pady=5)
+
+        # Label to display save slider value
+        self.save_slider_value_label = tk.Label(self.content_frame, text="Video Length: 1 second")
+        self.save_slider_value_label.pack(pady=5)
+
+        # Entry to specify precise video length
+        self.save_entry_label = tk.Label(self.content_frame, text="Specify Video Length (0-120 seconds):")
+        self.save_entry_label.pack(pady=5)
+
+        self.save_var = tk.StringVar()
+        self.save_var.set("1")
+        self.save_var.trace("w", self.update_save_from_entry)
+
+        self.save_entry = tk.Entry(self.content_frame, width=10, textvariable=self.save_var)
+        self.save_entry.pack(pady=5)
+
+        # Button to save footage
+        self.save_button = tk.Button(self.content_frame, text="Save Video", command=self.save, state="disabled")
+        self.save_button.pack(pady=10)
+
+        # Label for current save directory
+        self.savelabel = tk.Label(self.content_frame, text=f"Current Save Directory:")
+        self.savelabel.pack(pady=5)
+
+        self.dirlabel = tk.Label(self.content_frame, text=self.load_save_directory())
+        self.dirlabel.pack(pady=5)
+
+        # Button to change save directory
+        self.change_directory_button = tk.Button(self.content_frame, text="Change Save Directory", command=self.change_save_directory)
+        self.change_directory_button.pack(pady=10)
+        
+        # Initialize BooleanVar for the checkbox
+        self.upload_to_drive_var = tk.BooleanVar(value=self.upload_to_drive)
+
+        # Checkbox to enable/disable uploading to Google Drive
+        self.drive_checkbox = tk.Checkbutton(
+            self.content_frame,
+            text="Upload to Drive",
+            variable=self.upload_to_drive_var,
+            command=self.toggle_upload_to_drive
+        )
+        self.drive_checkbox.pack(pady=5)
+
+        # Button to authenticate drive
+        self.authbutton = tk.Button(self.content_frame, text="Authenticate Google Drive", command=self.authenticate)
+        self.authbutton.pack(pady=10)
+
+        # Entry for Google Drive folder link
+        self.drive_label = tk.Label(self.content_frame, text="Google Drive Folder Link:")
+        self.drive_label.pack(pady=5)
+
+        self.drive_var = tk.StringVar()
+        self.drive_var.set(self.load_link_directory())
+        
+        self.drive_entry = tk.Entry(self.content_frame, width=30, textvariable=self.drive_var)
+        self.drive_entry.pack(pady=5)
+
+       # Button to save footage
+        self.save_drive_button = tk.Button(self.content_frame, text="Save Drive Link", command=self.save_link, state="normal")
+        self.save_drive_button.pack(pady=10)
+
+    def toggle_upload_to_drive(self):
+        self.upload_to_drive = self.upload_to_drive_var.get()
+
+    def authenticate(self):
+        self.check_and_copy_credentials()
+        self.drive.authenticate()
+        tkinter.messagebox.showinfo("Info", "Authentication Successful")
+        
+    def save_link(self):
+        with open(self.SAVE_LINK_FILE, "w") as f:
+            test = self.drive_var.get()
+            f.write(test)
+
+    def load_link_directory(self):
+        """Load the save directory from file or initialize it."""
+        if os.path.exists(self.SAVE_LINK_FILE):
+            with open(self.SAVE_LINK_FILE, "r") as f:
+                link = f.read().strip()
+                return link
+        open(self.SAVE_LINK_FILE, "w")
+        return ""
 
     def on_webcam_change(self, event):
         selected_index = self.webcam_dropdown.current()  # Get the selected index
@@ -319,6 +410,44 @@ class WebcamSelectorApp:
         self.capture.set(cv2.CAP_PROP_FRAME_WIDTH, WIDTH)
         self.capture.set(cv2.CAP_PROP_FRAME_HEIGHT, HEIGHT)
         return int(self.capture.get(cv2.CAP_PROP_FRAME_WIDTH)), int(self.capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    
+    def check_and_copy_credentials(self):
+        """
+        Check if credentials.json exists in the current working directory.
+        If not, prompt the user to select the file and copy it to the working directory.
+        """
+        current_dir = os.getcwd()
+        credentials_path = os.path.join(current_dir, "credentials.json")
+
+        # Check if the file exists
+        if not os.path.exists(credentials_path):
+            print("credentials.json not found in the current directory.")
+
+            # Create a Tkinter root window (hidden)
+            root = tk.Tk()
+            root.withdraw()
+
+            # Prompt the user to select a file
+            tkinter.messagebox.showinfo("Select File", "Please select a credentials.json file.")
+            selected_file = tkinter.filedialog.askopenfilename(
+                title="Select credentials.json File",
+                filetypes=[("JSON Files", "*.json")]
+            )
+
+            # If a file was selected
+            if selected_file:
+                try:
+                    shutil.copy(selected_file, credentials_path)
+                    print(f"File copied to: {credentials_path}")
+                    tkinter.messagebox.showinfo("Success", "credentials.json file has been copied to the current directory.")
+                except Exception as e:
+                    print(f"Error copying file: {e}")
+                    tkinter.messagebox.showerror("Error", f"Failed to copy file: {e}")
+            else:
+                print("No file selected.")
+                tkinter.messagebox.showwarning("Warning", "No file was selected. credentials.json is still missing.")
+        else:
+            print("credentials.json already exists in the current directory.")
 
     def save(self):
         """Save the last 30 seconds of webcam frames to an MP4 file in a separate thread."""
@@ -358,10 +487,16 @@ class WebcamSelectorApp:
             out.write(frame)
 
         out.release()  # Release the writer
-
-        # Inform the user
-        self.root.after(0, lambda: self.save_button.config(state="normal"))  # Enable the save button
         self.root.after(0, lambda: tkinter.messagebox.showinfo("Info", f"Video saved as {filename}"))
+
+        if (self.upload_to_drive):
+            if (not self.drive.authenticated):
+                self.drive.authenticate()
+                self.drive.authenticated = True
+            self.drive.upload_to_shared_folder(filename, self.drive_var.get())
+            self.root.after(0, lambda: tkinter.messagebox.showinfo("Info", f"Video uploaded to Google Drive"))
+
+        self.root.after(0, lambda: self.save_button.config(state="normal"))  # Enable the save button
 
     def show_frame(self):
         """Capture and display frames in an external OpenCV window."""
