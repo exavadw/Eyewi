@@ -3,7 +3,6 @@ import tkinter.messagebox
 import tkinter.filedialog
 from tkinter import ttk
 import cv2
-from AVFoundation import AVCaptureDevice
 import time
 from collections import deque
 import os

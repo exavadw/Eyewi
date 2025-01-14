@@ -3,3 +3,4 @@
 token.pickle
 credentials.json
 save_link.txt
+venv/*
